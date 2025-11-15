@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+separated/
+output/
+midi_output/
+workspace/
+.DS_Store
