@@ -1,38 +1,24 @@
-import os
-import io
-import json
-import shutil
-import zipfile
-from datetime import datetime
+import streamlit as st
 from pathlib import Path
 from typing import List, Dict, Any
-
+from datetime import datetime
+import json
+import shutil
+import time
 import requests
-import streamlit as st
 
-
-
-# -----------------------------------------------------------------------------
-# Configuration
-# -----------------------------------------------------------------------------
+from processor import process_song
 
 WORKSPACE_DIR = Path("workspace")
 WORKSPACE_DIR.mkdir(exist_ok=True)
 
-# GPU worker URL (RunPod)
-WORKER_URL = os.environ.get(
-    "BEATDECODER_WORKER_URL",
-    "https://iblbtqx9zvpxqw-8000.proxy.runpod.net",
-)
-
 DEFAULT_DEMUCS_MODEL = "htdemucs"
 DEFAULT_STEMS_FOR_MIDI = ["bass", "other"]
-DEFAULT_DEMUCS_DEVICE = "cuda"  # default to GPU on worker
+DEFAULT_DEMUCS_DEVICE = "auto"
 
+# Default GPU worker URL (your RunPod proxy)
+DEFAULT_WORKER_URL = "https://iblbtqx9zvpxqw-8000.proxy.runpod.net"
 
-# -----------------------------------------------------------------------------
-# Helpers: file saving, jobs, metadata, index
-# -----------------------------------------------------------------------------
 
 def save_uploaded_file(uploaded_file) -> Path:
     temp_dir = WORKSPACE_DIR / "uploads"
@@ -92,6 +78,14 @@ def load_index() -> List[Dict[str, Any]]:
     return []
 
 
+def make_zip_for_job(job_dir: Path) -> Path:
+    zip_path = job_dir / f"{job_dir.name}.zip"
+    if not zip_path.exists():
+        base_name = job_dir / job_dir.name
+        shutil.make_archive(str(base_name), "zip", root_dir=job_dir)
+    return zip_path
+
+
 def init_session_state():
     if "demucs_model" not in st.session_state:
         st.session_state["demucs_model"] = DEFAULT_DEMUCS_MODEL
@@ -103,94 +97,68 @@ def init_session_state():
         st.session_state["logs"] = []
     if "demucs_device" not in st.session_state:
         st.session_state["demucs_device"] = DEFAULT_DEMUCS_DEVICE
+    if "processing_backend" not in st.session_state:
+        st.session_state["processing_backend"] = "Remote GPU worker"
+    if "worker_url" not in st.session_state:
+        st.session_state["worker_url"] = DEFAULT_WORKER_URL
 
 
 def log_to_session(msg: str):
     st.session_state["logs"].append(msg)
 
 
-def make_zip_for_job(job_dir: Path) -> Path:
-    zip_path = job_dir / f"{job_dir.name}.zip"
-    if not zip_path.exists():
-        base_name = job_dir / job_dir.name
-        shutil.make_archive(str(base_name), "zip", root_dir=job_dir)
-    return zip_path
-
-def update_index(workspace: Path, metadata: Dict[str, Any], job_path: Path):
-    """
-    Maintain a simple JSON index of all jobs for fast search/filter.
-    Mirrors the logic from processor.py to keep the Library/History working.
-    """
-    index_path = workspace / "index.json"
-    index: List[Dict[str, Any]] = []
-    if index_path.exists():
-        try:
-            with open(index_path, "r") as f:
-                index = json.load(f)
-        except Exception:
-            index = []
-
-    entry = {
-        "job_id": metadata.get("job_id"),
-        "job_label": metadata.get("job_label"),
-        "song_name": metadata.get("song_name"),
-        "original_file_name": metadata.get("original_file_name"),
-        "created_at": metadata.get("created_at"),
-        "model_name": metadata.get("model_name"),
-        "stems_for_midi": metadata.get("stems_for_midi"),
-        "bpm": metadata.get("bpm"),
-        "key": metadata.get("key"),
-        "mode": metadata.get("mode"),
-        "key_confidence": metadata.get("key_confidence"),
-        "job_path": str(job_path),
-    }
-
-    # Remove any old entry for this job_id
-    index = [e for e in index if e.get("job_id") != entry["job_id"]]
-    index.append(entry)
-
-    with open(index_path, "w") as f:
-        json.dump(index, f, indent=2)
-
-
-# -----------------------------------------------------------------------------
-# Streamlit layout
-# -----------------------------------------------------------------------------
-
-st.set_page_config(page_title="Decode Audio – Stem Splitter + MIDI Rebuilder", layout="wide")
+st.set_page_config(page_title="AI Stem Splitter + MIDI Rebuilder", layout="wide")
 init_session_state()
 
-st.title("🎧 Decode Audio – AI Stem Splitter + MIDI Rebuilder")
+st.title("🎧 AI Stem Splitter + MIDI Rebuilder")
 st.caption(
-    "Demucs + Basic Pitch + BPM/Key + chords/sections + Serum-style analysis, "
-    "now powered by a remote GPU worker."
+    "Demucs + BPM/Key + chords/sections + Serum-style analysis.\n"
+    "Remote GPU worker for full-length tracks (MIDI on GPU temporarily disabled for stability)."
 )
 
 tab_process, tab_history, tab_library, tab_settings = st.tabs(
     ["Process Track(s)", "History", "Library", "Settings"]
 )
 
-# -----------------------------------------------------------------------------
-# Settings tab
-# -----------------------------------------------------------------------------
-
+# ===========================
+# SETTINGS TAB
+# ===========================
 with tab_settings:
     st.header("Settings")
+
+    st.subheader("Backend")
+    backend = st.radio(
+        "Processing backend:",
+        ["Remote GPU worker", "Local (this server)"],
+        index=["Remote GPU worker", "Local (this server)"].index(
+            st.session_state["processing_backend"]
+        ),
+        help="Remote GPU worker = RunPod. Local = Render/your machine.",
+    )
+    st.session_state["processing_backend"] = backend
+
+    if backend == "Remote GPU worker":
+        worker_url = st.text_input(
+            "GPU worker URL",
+            value=st.session_state["worker_url"],
+            help="Your RunPod FastAPI endpoint root.",
+        )
+        st.session_state["worker_url"] = worker_url.strip()
 
     st.subheader("Demucs Model")
     model_input = st.text_input("Demucs model name:", st.session_state["demucs_model"])
     st.session_state["demucs_model"] = model_input.strip() or DEFAULT_DEMUCS_MODEL
 
-    st.subheader("Demucs Device (on worker)")
+    st.subheader("Demucs Device")
     device_choice = st.selectbox(
-        "Device:",
-        options=["cuda", "cpu"],
-        index=["cuda", "cpu"].index(st.session_state["demucs_device"]),
-        help="For the GPU worker, 'cuda' uses GPU, 'cpu' forces CPU on the worker.",
+        "Device (for local processing):",
+        options=["auto", "cpu", "cuda", "mps"],
+        index=["auto", "cpu", "cuda", "mps"].index(st.session_state["demucs_device"]),
+        help="Local-only. Remote GPU worker always uses its own GPU settings.",
     )
     st.session_state["demucs_device"] = device_choice
 
-    st.subheader("MIDI Extraction Targets")
+    st.subheader("MIDI Extraction Targets (Local only for now)")
     options = ["bass", "other", "vocals", "drums"]
     chosen = st.multiselect(
         "Which stems should Basic Pitch extract MIDI from?",
@@ -205,21 +173,20 @@ with tab_settings:
         value=st.session_state["run_serum_analysis"],
     )
 
-    st.subheader("Processing Mode")
+    st.subheader("Processing Mode (future cluster)")
     st.radio(
         "Mode:",
-        ["Remote GPU worker (current)", "Local (deprecated)"],
+        ["Single worker (current)", "Remote cluster (future)"],
         index=0,
-        help="This UI currently uses the remote GPU worker API for heavy processing.",
+        help="Cluster mode not implemented yet.",
     )
 
     st.info("Settings will be used for the next processing run.")
 
 
-# -----------------------------------------------------------------------------
-# History tab
-# -----------------------------------------------------------------------------
-
+# ===========================
+# HISTORY TAB
+# ===========================
 with tab_history:
     st.header("History")
 
@@ -248,8 +215,7 @@ with tab_history:
 
         runs_for_song = [info for info in job_infos if info["song_name"] == song_choice]
         run_labels = [
-            f"{info['label']} (created {info['created_at']})"
-            for info in runs_for_song
+            f"{info['label']} (created {info['created_at']})" for info in runs_for_song
         ]
         run_idx = st.selectbox(
             "Select run:",
@@ -276,9 +242,7 @@ with tab_history:
         st.write(f"**Estimated BPM:** {bpm if bpm is not None else 'Unknown'}")
         if key and mode:
             conf_str = (
-                f" (confidence {key_conf:.2f})"
-                if isinstance(key_conf, (int, float))
-                else ""
+                f" (confidence {key_conf:.2f})" if isinstance(key_conf, (int, float)) else ""
             )
             st.write(f"**Estimated Key:** {key} {mode}{conf_str}")
         else:
@@ -359,10 +323,9 @@ with tab_history:
             st.success("Job deleted. Refresh to update.")
 
 
-# -----------------------------------------------------------------------------
-# Library tab
-# -----------------------------------------------------------------------------
-
+# ===========================
+# LIBRARY TAB
+# ===========================
 with tab_library:
     st.header("Library / Search")
 
@@ -410,16 +373,15 @@ with tab_library:
                 )
 
 
-# -----------------------------------------------------------------------------
-# Process tab – now calling GPU worker
-# -----------------------------------------------------------------------------
-
+# ===========================
+# PROCESS TAB
+# ===========================
 with tab_process:
     st.header("Process Track(s)")
 
     st.write(
-        "Upload one or multiple WAV/MP3 files. Processing is done on a remote GPU worker, "
-        "then results are synced back here."
+        "Upload one or multiple WAV/MP3 files. "
+        "In **Remote GPU worker** mode, the heavy lifting happens on your RunPod GPU."
     )
 
     uploaded_files = st.file_uploader(
@@ -429,101 +391,64 @@ with tab_process:
     )
 
     job_label_input = st.text_input(
-        "Optional job name/description (single-file run, or used per-file in batch):",
+        "Optional job name/description:",
         "",
     )
 
-    if uploaded_files:
-        st.write(f"**Selected:** {len(uploaded_files)} file(s).")
+    backend = st.session_state["processing_backend"]
 
-        if st.button("Process Song(s)"):
-            st.session_state["logs"] = []
+    if uploaded_files and st.button("Process Song(s)"):
+        st.session_state["logs"] = []
+        demucs_model = st.session_state["demucs_model"]
+        stems_for_midi = st.session_state["stems_for_midi"]
+        run_serum = st.session_state["run_serum_analysis"]
+        demucs_device = st.session_state["demucs_device"]
 
-            demucs_model = st.session_state["demucs_model"]
-            stems_for_midi = st.session_state["stems_for_midi"]
-            run_serum = st.session_state["run_serum_analysis"]
-            demucs_device = st.session_state["demucs_device"]
+        col_left, col_right = st.columns([2, 1])
 
-            col_left, col_right = st.columns([2, 1])
+        with col_right:
+            st.subheader("Logs")
+            log_box = st.empty()
 
+        def update_log_box():
+            log_box.text_area(
+                "Processing log:",
+                value="\n".join(st.session_state["logs"]),
+                height=400,
+            )
+
+        # -------------------------
+        # LOCAL PROCESSING BACKEND
+        # -------------------------
+        if backend == "Local (this server)":
             with col_left:
                 if len(uploaded_files) == 1:
                     uploaded_file = uploaded_files[0]
-                    with st.spinner("Processing on GPU worker..."):
+                    with st.spinner("Processing locally..."):
                         try:
-                            # Save locally (for record) and stream to worker
                             saved = save_uploaded_file(uploaded_file)
-                            log_to_session("Uploading file to GPU worker...")
-
-                            with open(saved, "rb") as f_in:
-                                files = {
-                                    "file": (uploaded_file.name, f_in, uploaded_file.type or "audio/wav")
-                                }
-                                data = {
-                                    "model_name": demucs_model,
-                                    "stems_for_midi": ",".join(stems_for_midi),
-                                    "run_serum_analysis": str(run_serum).lower(),
-                                    "demucs_device": demucs_device or "cuda",
-                                }
-                                resp = requests.post(
-                                    f"{WORKER_URL}/process",
-                                    files=files,
-                                    data=data,
-                                    timeout=1800,
-                                )
-                            resp.raise_for_status()
-                            result = resp.json()
-                            job_dir_name = result["job_dir_name"]
-                            log_to_session(f"Worker job complete: {job_dir_name}")
-
-                            # Download ZIP of job from worker
-                            log_to_session("Downloading job ZIP from worker...")
-                            zip_resp = requests.get(
-                                f"{WORKER_URL}/job_zip",
-                                params={"job_dir": job_dir_name},
-                                timeout=1800,
+                            result = process_song(
+                                saved,
+                                WORKSPACE_DIR,
+                                model_name=demucs_model,
+                                stems_for_midi=stems_for_midi,
+                                run_serum_analysis=run_serum,
+                                log_fn=log_to_session,
+                                job_label=job_label_input or None,
+                                demucs_device=demucs_device,
                             )
-                            zip_resp.raise_for_status()
+                            update_log_box()
 
-                            # Extract into local workspace
-                            jobs_root = WORKSPACE_DIR / "jobs"
-                            jobs_root.mkdir(parents=True, exist_ok=True)
-                            with zipfile.ZipFile(io.BytesIO(zip_resp.content)) as zf:
-                                zf.extractall(jobs_root)
+                            output_root = result["output_root"]
+                            stems_dir = result["stems_dir"]
+                            midi_dir = result["midi_dir"]
+                            serum_analysis = result.get("serum_analysis", [])
+                            bpm = result.get("bpm")
+                            key = result.get("key")
+                            mode = result.get("mode")
+                            key_conf = result.get("key_confidence")
 
-                            job_dir = jobs_root / job_dir_name
-                            if not job_dir.exists():
-                                raise RuntimeError("Job folder not found after extracting ZIP.")
-
-                            # Load metadata & update local index
-                            meta = load_metadata(job_dir)
-                            if not meta:
-                                meta = {
-                                    "job_id": result.get("job_id"),
-                                    "job_label": job_label_input or None,
-                                    "song_name": result.get("song_name"),
-                                    "original_file_name": uploaded_file.name,
-                                    "created_at": datetime.now().isoformat(),
-                                    "model_name": demucs_model,
-                                    "stems_for_midi": stems_for_midi,
-                                    "bpm": result.get("bpm"),
-                                    "key": result.get("key"),
-                                    "mode": result.get("mode"),
-                                    "key_confidence": result.get("key_confidence"),
-                                }
-                                with open(job_dir / "metadata.json", "w") as f_meta:
-                                    json.dump(meta, f_meta, indent=2)
-
-                            update_index(WORKSPACE_DIR, meta, job_dir)
-
-                            output_root = job_dir
-                            stems_dir = job_dir
-                            bpm = meta.get("bpm")
-                            key = meta.get("key")
-                            mode = meta.get("mode")
-                            key_conf = meta.get("key_confidence")
-
-                            st.success("Processing complete!")
+                            st.success("Processing complete (local)!")
                             st.subheader("Output Overview")
                             st.write(f"**Output folder:** `{output_root.resolve()}`")
 
@@ -547,7 +472,7 @@ with tab_process:
                                     data=f_zip,
                                     file_name=zip_path.name,
                                     mime="application/zip",
-                                    key="zip-latest",
+                                    key="zip-latest-local",
                                 )
 
                             st.markdown("### 🎚 Stems")
@@ -571,7 +496,6 @@ with tab_process:
                                         )
 
                             st.markdown("### 🎼 MIDI Files")
-                            midi_dir = output_root / "midi"
                             if midi_dir.exists():
                                 midi_files = [
                                     p for p in midi_dir.iterdir() if p.suffix.lower() == ".mid"
@@ -594,20 +518,14 @@ with tab_process:
                                             key=f"midi-{rel}",
                                         )
 
-                            serum_json_path = output_root / "serum_patches.json"
-                            if serum_json_path.exists():
+                            if run_serum and serum_analysis:
                                 st.markdown("### 🔬 Sound Design / Serum Hints")
-                                try:
-                                    with open(serum_json_path, "r") as f_serum:
-                                        serum_data = json.load(f_serum)
-                                    for analysis in serum_data:
-                                        st.markdown(f"**Stem:** `{analysis.get('stem','')}`")
-                                        st.code(analysis.get("description", ""))
-                                        if "serum_patch" in analysis:
-                                            st.markdown("**Serum patch suggestion:**")
-                                            st.code(json.dumps(analysis["serum_patch"], indent=2))
-                                except Exception as e:
-                                    st.write(f"Could not read serum_patches.json: {e}")
+                                for analysis in serum_analysis:
+                                    st.markdown(f"**Stem:** `{analysis['stem']}`")
+                                    st.code(analysis["description"])
+                                    if "serum_patch" in analysis:
+                                        st.markdown("**Serum patch suggestion:**")
+                                        st.code(json.dumps(analysis["serum_patch"], indent=2))
 
                             guide_path = output_root / "ABLETON_IMPORT.txt"
                             if guide_path.exists():
@@ -616,93 +534,42 @@ with tab_process:
                                     st.text(f_guide.read())
 
                         except Exception as e:
-                            st.error(f"Error during processing: {e}")
-
+                            update_log_box()
+                            st.error(f"Error during processing (local): {e}")
                 else:
-                    with st.spinner("Processing batch on GPU worker..."):
+                    with st.spinner("Processing batch locally..."):
                         job_summaries = []
-                        jobs_root = WORKSPACE_DIR / "jobs"
-                        jobs_root.mkdir(parents=True, exist_ok=True)
-
                         for up in uploaded_files:
                             try:
                                 saved = save_uploaded_file(up)
                                 per_file_label = job_label_input or up.name
-                                log_to_session(f"Uploading '{up.name}' to GPU worker...")
-
-                                with open(saved, "rb") as f_in:
-                                    files = {
-                                        "file": (up.name, f_in, up.type or "audio/wav")
-                                    }
-                                    data = {
-                                        "model_name": demucs_model,
-                                        "stems_for_midi": ",".join(stems_for_midi),
-                                        "run_serum_analysis": str(run_serum).lower(),
-                                        "demucs_device": demucs_device or "cuda",
-                                    }
-                                    resp = requests.post(
-                                        f"{WORKER_URL}/process",
-                                        files=files,
-                                        data=data,
-                                        timeout=1800,
-                                    )
-                                resp.raise_for_status()
-                                result = resp.json()
-                                job_dir_name = result["job_dir_name"]
-
-                                zip_resp = requests.get(
-                                    f"{WORKER_URL}/job_zip",
-                                    params={"job_dir": job_dir_name},
-                                    timeout=1800,
+                                result = process_song(
+                                    saved,
+                                    WORKSPACE_DIR,
+                                    model_name=demucs_model,
+                                    stems_for_midi=stems_for_midi,
+                                    run_serum_analysis=run_serum,
+                                    log_fn=log_to_session,
+                                    job_label=per_file_label,
+                                    demucs_device=demucs_device,
                                 )
-                                zip_resp.raise_for_status()
-
-                                with zipfile.ZipFile(io.BytesIO(zip_resp.content)) as zf:
-                                    zf.extractall(jobs_root)
-
-                                job_dir = jobs_root / job_dir_name
-                                if not job_dir.exists():
-                                    raise RuntimeError(
-                                        f"Job folder not found after extracting ZIP for {up.name}."
-                                    )
-
-                                meta = load_metadata(job_dir)
-                                if not meta:
-                                    meta = {
-                                        "job_id": result.get("job_id"),
-                                        "job_label": per_file_label,
-                                        "song_name": result.get("song_name", up.name),
-                                        "original_file_name": up.name,
-                                        "created_at": datetime.now().isoformat(),
-                                        "model_name": demucs_model,
-                                        "stems_for_midi": stems_for_midi,
-                                        "bpm": result.get("bpm"),
-                                        "key": result.get("key"),
-                                        "mode": result.get("mode"),
-                                        "key_confidence": result.get("key_confidence"),
-                                    }
-                                    with open(job_dir / "metadata.json", "w") as f_meta:
-                                        json.dump(meta, f_meta, indent=2)
-
-                                update_index(WORKSPACE_DIR, meta, job_dir)
-
+                                update_log_box()
                                 job_summaries.append(
                                     {
                                         "file": up.name,
-                                        "song_name": meta.get("song_name", up.name),
+                                        "job_folder": result["output_root"],
+                                        "song_name": result.get("song_name", up.name),
                                         "job_label": per_file_label,
-                                        "bpm": meta.get("bpm"),
-                                        "key": meta.get("key"),
-                                        "mode": meta.get("mode"),
-                                        "job_folder": job_dir,
+                                        "bpm": result.get("bpm"),
+                                        "key": result.get("key"),
+                                        "mode": result.get("mode"),
                                     }
                                 )
-
                             except Exception as e:
                                 st.error(f"Error processing {up.name}: {e}")
 
                         if job_summaries:
-                            st.success(f"Batch complete. Processed {len(job_summaries)} file(s).")
+                            st.success(f"Batch complete (local). Processed {len(job_summaries)} file(s).")
                             st.markdown("### Summary")
                             for js in job_summaries:
                                 key_str = (
@@ -717,12 +584,136 @@ with tab_process:
                                 )
                             st.info("Use the History or Library tabs to inspect jobs and download ZIPs.")
 
-            with col_right:
-                st.subheader("Logs")
-                st.text_area(
-                    "Processing log:",
-                    value="\n".join(st.session_state["logs"]),
-                    height=400,
-                )
+            update_log_box()
+
+        # -------------------------
+        # REMOTE GPU BACKEND
+        # -------------------------
+        else:
+            worker_url = st.session_state["worker_url"].rstrip("/")
+            if not worker_url:
+                with col_left:
+                    st.error("GPU worker URL is empty. Set it in Settings.")
+            else:
+                with col_left:
+                    if len(uploaded_files) != 1:
+                        st.warning("GPU worker mode currently supports one file at a time.")
+                    uploaded_file = uploaded_files[0]
+
+                    try:
+                        # Start job
+                        st.info("Starting GPU job...")
+                        files = {
+                            "file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type),
+                        }
+                        data = {
+                            "model_name": demucs_model,
+                            "demucs_device": "cuda",
+                            "run_serum_analysis": "true" if run_serum else "false",
+                            "job_label": job_label_input or "",
+                            "stems_for_midi": ",".join(stems_for_midi),
+                        }
+                        resp = requests.post(
+                            f"{worker_url}/start_job",
+                            files=files,
+                            data=data,
+                            timeout=60,
+                        )
+                        resp.raise_for_status()
+                        start_data = resp.json()
+                        job_id = start_data["job_id"]
+
+                        st.success(f"GPU job started. Job ID: `{job_id}`")
+
+                        # Poll for status
+                        status_placeholder = st.empty()
+                        poll_log_placeholder = st.empty()
+
+                        def show_logs_from_status(job_status: Dict[str, Any]):
+                            log_lines = job_status.get("log", []) or []
+                            st.session_state["logs"] = log_lines
+                            poll_log_placeholder.text_area(
+                                "Worker log:",
+                                value="\n".join(log_lines),
+                                height=300,
+                            )
+
+                        with st.spinner("Processing on GPU worker..."):
+                            status = "queued"
+                            result_data = None
+                            max_polls = 200  # e.g. 200 * 3s = 600s max
+                            for i in range(max_polls):
+                                time.sleep(3)
+                                s_resp = requests.get(
+                                    f"{worker_url}/job_status",
+                                    params={"job_id": job_id},
+                                    timeout=30,
+                                )
+                                s_resp.raise_for_status()
+                                status_json = s_resp.json()
+                                status = status_json["status"]
+                                status_placeholder.write(f"Status: **{status}**")
+                                show_logs_from_status(status_json)
+
+                                if status == "done":
+                                    result_data = status_json.get("result", {})
+                                    break
+                                if status == "error":
+                                    err_msg = status_json.get("error", "Unknown error")
+                                    st.error(f"GPU job failed: {err_msg}")
+                                    return
+
+                            if status != "done":
+                                st.error("GPU job did not finish in time.")
+                                return
+
+                        # Fetch ZIP from worker
+                        st.info("Fetching ZIP from GPU worker...")
+                        z_resp = requests.get(
+                            f"{worker_url}/job_zip",
+                            params={"job_id": job_id},
+                            timeout=120,
+                        )
+                        z_resp.raise_for_status()
+                        zip_bytes = z_resp.content
+
+                        bpm = result_data.get("bpm")
+                        key = result_data.get("key")
+                        mode = result_data.get("mode")
+                        key_conf = result_data.get("key_confidence")
+                        song_name = result_data.get("song_name") or uploaded_file.name
+
+                        st.success("Processing complete on GPU!")
+                        st.subheader("Track Analysis (from GPU)")
+                        st.write(f"**Song:** {song_name}")
+                        st.write(f"**Estimated BPM:** {bpm if bpm is not None else 'Unknown'}")
+                        if key and mode:
+                            conf_str = (
+                                f" (confidence {key_conf:.2f})"
+                                if isinstance(key_conf, (int, float))
+                                else ""
+                            )
+                            st.write(f"**Estimated Key:** {key} {mode}{conf_str}")
+                        else:
+                            st.write("**Estimated Key:** Unknown")
+
+                        st.markdown("### 📦 Download Entire Job (from GPU)")
+                        st.download_button(
+                            "Download all (ZIP)",
+                            data=zip_bytes,
+                            file_name=f"{song_name}_job.zip",
+                            mime="application/zip",
+                            key="zip-gpu-latest",
+                        )
+
+                        st.info(
+                            "Stems and files are contained inside the ZIP. "
+                            "Inline audio preview is only available for local jobs for now."
+                        )
+
+                    except Exception as e:
+                        st.error(f"Error during GPU processing: {e}")
+
+            update_log_box()
     else:
         st.info("Upload one or more WAV/MP3 files to begin.")

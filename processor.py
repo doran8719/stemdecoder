@@ -54,6 +54,8 @@ def run_demucs(
 
     # Build demucs command
     cmd = ["demucs", "-n", model_name]
+    # device can be "auto", "cpu", "cuda", "mps", or None/""
+    # For "auto" or empty, let Demucs decide (no -d flag).
     if device and device.lower() not in ("auto", ""):
         cmd += ["-d", device]
     cmd.append(str(audio_file))
@@ -141,13 +143,39 @@ def prepare_output_folder(stem_dir: Path, workspace: Path) -> Path:
     return output_root
 
 
-def analyze_global_track(audio_path: Path, log_fn: LogFn = None) -> Dict[str, Any]:
+def _load_audio_for_analysis(
+    audio_path: Path,
+    target_sr: int = 22050,
+    log_fn: LogFn = None,
+) -> tuple[np.ndarray, int]:
+    """
+    Load audio once for all analysis steps (BPM/key, chords, sections).
+    Downsamples to target_sr for speed; this is usually more than enough
+    resolution for global analysis.
+    """
+    _log(f"Loading audio for analysis at {target_sr} Hz...", log_fn)
+    y, sr = librosa.load(str(audio_path), sr=target_sr, mono=True)
+    return y, sr
+
+
+def analyze_global_track(
+    audio_path: Path,
+    y: Optional[np.ndarray] = None,
+    sr: Optional[int] = None,
+    log_fn: LogFn = None,
+) -> Dict[str, Any]:
     """
     Analyze full track for BPM and key.
+
+    If y/sr are provided, they are used directly (no reload).
+    Otherwise, the audio is loaded from audio_path.
     """
     try:
         _log("Analyzing track for BPM and key...", log_fn)
-        y, sr = librosa.load(str(audio_path), sr=None, mono=True)
+
+        if y is None or sr is None:
+            y, sr = librosa.load(str(audio_path), sr=None, mono=True)
+
         if len(y) == 0:
             return {"bpm": None, "key": None, "mode": None, "key_confidence": None}
 
@@ -212,19 +240,32 @@ def analyze_global_track(audio_path: Path, log_fn: LogFn = None) -> Dict[str, An
         return {"bpm": None, "key": None, "mode": None, "key_confidence": None}
 
 
-def analyze_chords_and_sections(audio_path: Path, log_fn: LogFn = None) -> Dict[str, Any]:
+def analyze_chords_and_sections(
+    audio_path: Path,
+    y: Optional[np.ndarray] = None,
+    sr: Optional[int] = None,
+    log_fn: LogFn = None,
+) -> Dict[str, Any]:
     """
     Very rough chord and section analysis based on chroma and energy.
+
+    If y/sr are provided, they are used directly (no reload).
+    Otherwise, the audio is loaded from audio_path.
     """
     try:
         _log("Analyzing chords and sections...", log_fn)
-        y, sr = librosa.load(str(audio_path), sr=None, mono=True)
+
+        if y is None or sr is None:
+            y, sr = librosa.load(str(audio_path), sr=None, mono=True)
+
         if len(y) == 0:
             return {"chords": [], "sections": []}
 
         hop_length = 2048
         chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop_length)
-        times = librosa.frames_to_time(np.arange(chroma.shape[1]), sr=sr, hop_length=hop_length)
+        times = librosa.frames_to_time(
+            np.arange(chroma.shape[1]), sr=sr, hop_length=hop_length
+        )
 
         triad_templates = {
             "C": [0, 4, 7],
@@ -272,7 +313,9 @@ def analyze_chords_and_sections(audio_path: Path, log_fn: LogFn = None) -> Dict[
             )
 
         rms = librosa.feature.rms(y=y, frame_length=4096, hop_length=2048)[0]
-        rms_times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=2048)
+        rms_times = librosa.frames_to_time(
+            np.arange(len(rms)), sr=sr, hop_length=2048
+        )
         thresh = float(np.median(rms) * 0.7)
 
         sections = []
@@ -343,7 +386,9 @@ def analyze_stem_for_synth(stem_path: Path) -> Dict[str, Any]:
         rms = librosa.feature.rms(y=y, frame_length=frame, hop_length=hop)[0]
         if len(rms) > 10:
             start_rms = float(np.mean(rms[:5]))
-            mid_rms = float(np.mean(rms[len(rms) // 3 : 2 * len(rms) // 3]))
+            mid_rms = float(
+                np.mean(rms[len(rms) // 3 : 2 * len(rms) // 3])
+            )
             end_rms = float(np.mean(rms[-5:]))
 
             if mid_rms > start_rms * 1.2 and mid_rms > end_rms * 1.2:
@@ -579,15 +624,30 @@ def process_song(
 
     _log(f"Starting job {job_id} for {uploaded_file_path.name}", log_fn)
 
-    global_analysis = analyze_global_track(local_audio, log_fn)
-    chord_section_analysis = analyze_chords_and_sections(local_audio, log_fn)
+    # Load audio once for analysis steps (BPM/key + chords/sections)
+    y_analysis, sr_analysis = _load_audio_for_analysis(local_audio, target_sr=22050, log_fn=log_fn)
 
-    stem_src_dir = run_demucs(local_audio, model_name=model_name, device=demucs_device, log_fn=log_fn)
+    global_analysis = analyze_global_track(
+        local_audio, y=y_analysis, sr=sr_analysis, log_fn=log_fn
+    )
+    chord_section_analysis = analyze_chords_and_sections(
+        local_audio, y=y_analysis, sr=sr_analysis, log_fn=log_fn
+    )
+
+    # Full-quality audio is still used by Demucs via the CLI above
+    stem_src_dir = run_demucs(
+        local_audio,
+        model_name=model_name,
+        device=demucs_device,
+        log_fn=log_fn,
+    )
 
     output_root = prepare_output_folder(stem_src_dir, workspace)
     stems_dir = output_root
 
-    run_basic_pitch_on_stems(stems_dir, output_root, stems_for_midi, log_fn)
+    # MIDI extraction (may be skipped if stems_for_midi is empty)
+    if stems_for_midi:
+        run_basic_pitch_on_stems(stems_dir, output_root, stems_for_midi, log_fn)
 
     serum_results: List[Dict[str, Any]] = []
     if run_serum_analysis:
@@ -641,4 +701,3 @@ def process_song(
         "chords": chord_section_analysis.get("chords", []),
         "sections": chord_section_analysis.get("sections", []),
     }
-
