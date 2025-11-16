@@ -10,7 +10,7 @@ from typing import List, Dict, Any
 import requests
 import streamlit as st
 
-from processor import update_index
+
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -115,6 +115,42 @@ def make_zip_for_job(job_dir: Path) -> Path:
         base_name = job_dir / job_dir.name
         shutil.make_archive(str(base_name), "zip", root_dir=job_dir)
     return zip_path
+
+def update_index(workspace: Path, metadata: Dict[str, Any], job_path: Path):
+    """
+    Maintain a simple JSON index of all jobs for fast search/filter.
+    Mirrors the logic from processor.py to keep the Library/History working.
+    """
+    index_path = workspace / "index.json"
+    index: List[Dict[str, Any]] = []
+    if index_path.exists():
+        try:
+            with open(index_path, "r") as f:
+                index = json.load(f)
+        except Exception:
+            index = []
+
+    entry = {
+        "job_id": metadata.get("job_id"),
+        "job_label": metadata.get("job_label"),
+        "song_name": metadata.get("song_name"),
+        "original_file_name": metadata.get("original_file_name"),
+        "created_at": metadata.get("created_at"),
+        "model_name": metadata.get("model_name"),
+        "stems_for_midi": metadata.get("stems_for_midi"),
+        "bpm": metadata.get("bpm"),
+        "key": metadata.get("key"),
+        "mode": metadata.get("mode"),
+        "key_confidence": metadata.get("key_confidence"),
+        "job_path": str(job_path),
+    }
+
+    # Remove any old entry for this job_id
+    index = [e for e in index if e.get("job_id") != entry["job_id"]]
+    index.append(entry)
+
+    with open(index_path, "w") as f:
+        json.dump(index, f, indent=2)
 
 
 # -----------------------------------------------------------------------------
