@@ -1,8 +1,10 @@
 from pathlib import Path
 from typing import List
 
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import JSONResponse
+import shutil
+
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import JSONResponse, FileResponse
 
 from processor import process_song
 
@@ -26,7 +28,7 @@ async def process_endpoint(
 
     - Receives an uploaded audio file
     - Calls process_song() with demucs_device set (default 'cuda')
-    - Returns metadata and internal job path (we'll later add real download URLs)
+    - Returns metadata and job folder name
     """
 
     # 1) Save the uploaded file into this worker's workspace
@@ -43,7 +45,6 @@ async def process_endpoint(
     ]
 
     # 3) Run the existing processor on this GPU box
-    #    Force demucs to use the requested device (default "cuda")
     result = process_song(
         uploaded_file_path=local_path,
         workspace=WORKSPACE_DIR,
@@ -55,7 +56,8 @@ async def process_endpoint(
         demucs_device=demucs_device or "cuda",
     )
 
-    # 4) Return basic metadata + paths (for now)
+    job_dir_name = result["output_root"].name
+
     return JSONResponse(
         {
             "job_id": result["job_id"],
@@ -66,5 +68,33 @@ async def process_endpoint(
             "mode": result["mode"],
             "key_confidence": result["key_confidence"],
             "job_path": str(result["output_root"]),
+            "job_dir_name": job_dir_name,
         }
+    )
+
+
+@app.get("/job_zip")
+def job_zip(job_dir: str):
+    """
+    Return a ZIP of a finished job folder.
+
+    The frontend will:
+    - call /process to start work
+    - get job_dir_name
+    - call /job_zip?job_dir=<job_dir_name> to download the full bundle
+    """
+
+    job_path = WORKSPACE_DIR / "jobs" / job_dir
+    if not job_path.exists() or not job_path.is_dir():
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    zip_path = job_path / f"{job_dir}.zip"
+    if not zip_path.exists():
+        # Create ZIP: <job_dir>.zip inside the job folder
+        shutil.make_archive(str(job_path / job_dir), "zip", root_dir=job_path)
+
+    return FileResponse(
+        path=str(zip_path),
+        filename=f"{job_dir}.zip",
+        media_type="application/zip",
     )
