@@ -4,9 +4,7 @@ from typing import List, Dict, Any
 from datetime import datetime
 import json
 import shutil
-
-import librosa
-import soundfile as sf
+import time  # NEW: for timing processing runs
 
 from processor import process_song
 
@@ -16,29 +14,6 @@ WORKSPACE_DIR.mkdir(exist_ok=True)
 DEFAULT_DEMUCS_MODEL = "htdemucs"
 DEFAULT_STEMS_FOR_MIDI = ["bass", "other"]
 DEFAULT_DEMUCS_DEVICE = "auto"
-
-# Max length (in seconds) of audio we will process on the server
-MAX_DURATION_SEC = 20.0  # adjust if you want shorter/longer
-
-
-def crop_audio_to_max_duration_inplace(input_path: Path, max_duration: float = MAX_DURATION_SEC) -> Path:
-    """
-    Load audio from input_path, convert to mono, crop to max_duration seconds,
-    and overwrite the same file on disk. Returns the same path.
-
-    If the file is already shorter than max_duration, the original file is left as-is.
-    """
-    # Load audio – mono to keep things smaller/faster
-    y, sr = librosa.load(str(input_path), sr=44100, mono=True)
-
-    max_samples = int(max_duration * sr)
-    if len(y) > max_samples:
-        y = y[:max_samples]
-
-    # Overwrite the same file in-place (always write WAV)
-    sf.write(str(input_path), y, sr)
-
-    return input_path
 
 
 def save_uploaded_file(uploaded_file) -> Path:
@@ -220,8 +195,10 @@ with tab_history:
         st.write(f"**Job folder:** `{job_dir.resolve()}`")
         if meta.get("job_label"):
             st.write(f"**Job name:** {meta['job_label']}")
+        st.write(
+            f"**Demucs model:** {meta.get('model_name', 'unknown')}"
+        )
         st.write(f"**Original file:** {meta.get('original_file_name', 'unknown')}")
-        st.write(f"**Demucs model:** {meta.get('model_name', 'unknown')}")
 
         bpm = meta.get("bpm")
         key = meta.get("key")
@@ -249,14 +226,13 @@ with tab_history:
         st.markdown("### 📦 Download Entire Job")
         zip_path = make_zip_for_job(job_dir)
         with open(zip_path, "rb") as f_zip:
-            zip_bytes = f_zip.read()
-        st.download_button(
-            "Download all (ZIP)",
-            data=zip_bytes,
-            file_name=zip_path.name,
-            mime="application/zip",
-            key=f"zip-{job_dir.name}",
-        )
+            st.download_button(
+                "Download all (ZIP)",
+                data=f_zip,
+                file_name=zip_path.name,
+                mime="application/zip",
+                key=f"zip-{job_dir.name}",
+            )
 
         st.markdown("### 🎚 Stems")
         if not stems:
@@ -266,14 +242,14 @@ with tab_history:
                 rel = stem.relative_to(job_dir)
                 with open(stem, "rb") as f:
                     data = f.read()
-                st.audio(data, format="audio/wav")
-                st.download_button(
-                    label=f"Download {rel}",
-                    data=data,
-                    file_name=str(rel),
-                    mime="audio/wav",
-                    key=f"hist-stem-{job_dir.name}-{rel}",
-                )
+                    st.audio(data, format="audio/wav")
+                    st.download_button(
+                        label=f"Download {rel}",
+                        data=data,
+                        file_name=str(rel),
+                        mime="audio/wav",
+                        key=f"hist-stem-{job_dir.name}-{rel}",
+                    )
 
         st.markdown("### 🎼 MIDI Files")
         if not midi_files:
@@ -283,13 +259,13 @@ with tab_history:
                 rel = midi.relative_to(job_dir)
                 with open(midi, "rb") as f:
                     data = f.read()
-                st.download_button(
-                    label=f"Download {rel}",
-                    data=data,
-                    file_name=str(rel),
-                    mime="audio/midi",
-                    key=f"hist-midi-{job_dir.name}-{rel}",
-                )
+                    st.download_button(
+                        label=f"Download {rel}",
+                        data=data,
+                        file_name=str(rel),
+                        mime="audio/midi",
+                        key=f"hist-midi-{job_dir.name}-{rel}",
+                    )
 
         serum_json_path = job_dir / "serum_patches.json"
         if serum_json_path.exists():
@@ -364,7 +340,17 @@ with tab_library:
 with tab_process:
     st.header("Process Track(s)")
 
-    st.write("Upload one or multiple WAV/MP3 files. Single file gives detailed view; multiple files run in batch.")
+    st.write(
+        "Upload one or multiple WAV/MP3 files. Single file gives detailed view; "
+        "multiple files run in batch."
+    )
+
+    st.info(
+        "This prototype now processes the *full track*. "
+        "Processing time scales with song length and server speed."
+    )
+
+
 
     uploaded_files = st.file_uploader(
         "Upload WAV or MP3",
@@ -395,12 +381,12 @@ with tab_process:
                     uploaded_file = uploaded_files[0]
                     with st.spinner("Processing..."):
                         try:
-                            saved = save_uploaded_file(uploaded_file)
-                            # Crop in-place to max duration (keeps same path/name)
-                            cropped_path = crop_audio_to_max_duration_inplace(saved)
+                            # NEW: measure total processing time
+                            start_time = time.time()
 
+                            saved = save_uploaded_file(uploaded_file)
                             result = process_song(
-                                cropped_path,
+                                saved,
                                 WORKSPACE_DIR,
                                 model_name=demucs_model,
                                 stems_for_midi=stems_for_midi,
@@ -409,6 +395,8 @@ with tab_process:
                                 job_label=job_label_input or None,
                                 demucs_device=demucs_device,
                             )
+
+                            elapsed = time.time() - start_time
 
                             output_root = result["output_root"]
                             stems_dir = result["stems_dir"]
@@ -422,6 +410,9 @@ with tab_process:
                             st.success("Processing complete!")
                             st.subheader("Output Overview")
                             st.write(f"**Output folder:** `{output_root.resolve()}`")
+
+                            # NEW: show how long it took
+                            st.write(f"⏱ **Processing time:** {elapsed:.1f} seconds")
 
                             st.markdown("### 🎼 Track Analysis")
                             st.write(f"**Estimated BPM:** {bpm if bpm is not None else 'Unknown'}")
@@ -438,14 +429,13 @@ with tab_process:
                             st.markdown("### 📦 Download Entire Job")
                             zip_path = make_zip_for_job(output_root)
                             with open(zip_path, "rb") as f_zip:
-                                zip_bytes = f_zip.read()
-                            st.download_button(
-                                "Download all (ZIP)",
-                                data=zip_bytes,
-                                file_name=zip_path.name,
-                                mime="application/zip",
-                                key="zip-latest",
-                            )
+                                st.download_button(
+                                    "Download all (ZIP)",
+                                    data=f_zip,
+                                    file_name=zip_path.name,
+                                    mime="application/zip",
+                                    key="zip-latest",
+                                )
 
                             st.markdown("### 🎚 Stems")
                             stem_files = [
@@ -458,14 +448,14 @@ with tab_process:
                                     rel = stem.relative_to(output_root)
                                     with open(stem, "rb") as f:
                                         data = f.read()
-                                    st.audio(data, format="audio/wav")
-                                    st.download_button(
-                                        label=f"Download {rel}",
-                                        data=data,
-                                        file_name=str(rel),
-                                        mime="audio/wav",
-                                        key=f"stem-{rel}",
-                                    )
+                                        st.audio(data, format="audio/wav")
+                                        st.download_button(
+                                            label=f"Download {rel}",
+                                            data=data,
+                                            file_name=str(rel),
+                                            mime="audio/wav",
+                                            key=f"stem-{rel}",
+                                        )
 
                             st.markdown("### 🎼 MIDI Files")
                             if midi_dir.exists():
@@ -482,13 +472,13 @@ with tab_process:
                                     rel = midi.relative_to(output_root)
                                     with open(midi, "rb") as f:
                                         data = f.read()
-                                    st.download_button(
-                                        label=f"Download {rel}",
-                                        data=data,
-                                        file_name=str(rel),
-                                        mime="audio/midi",
-                                        key=f"midi-{rel}",
-                                    )
+                                        st.download_button(
+                                            label=f"Download {rel}",
+                                            data=data,
+                                            file_name=str(rel),
+                                            mime="audio/midi",
+                                            key=f"midi-{rel}",
+                                        )
 
                             if run_serum and serum_analysis:
                                 st.markdown("### 🔬 Sound Design / Serum Hints")
@@ -513,12 +503,12 @@ with tab_process:
                         for up in uploaded_files:
                             try:
                                 saved = save_uploaded_file(up)
-                                # Crop in-place to max duration
-                                cropped_path = crop_audio_to_max_duration_inplace(saved)
-
                                 per_file_label = job_label_input or up.name
+
+                                start_time = time.time()
+
                                 result = process_song(
-                                    cropped_path,
+                                    saved,
                                     WORKSPACE_DIR,
                                     model_name=demucs_model,
                                     stems_for_midi=stems_for_midi,
@@ -527,6 +517,9 @@ with tab_process:
                                     job_label=per_file_label,
                                     demucs_device=demucs_device,
                                 )
+
+                                elapsed = time.time() - start_time
+
                                 job_summaries.append(
                                     {
                                         "file": up.name,
@@ -536,6 +529,7 @@ with tab_process:
                                         "bpm": result.get("bpm"),
                                         "key": result.get("key"),
                                         "mode": result.get("mode"),
+                                        "elapsed": elapsed,
                                     }
                                 )
                             except Exception as e:
@@ -553,6 +547,7 @@ with tab_process:
                                 st.write(
                                     f"- **File:** {js['file']} → **Song:** {js['song_name']} "
                                     f"→ **BPM:** {js.get('bpm', 'Unknown')} → **Key:** {key_str} "
+                                    f"→ **Time:** {js['elapsed']:.1f}s "
                                     f"→ **Job folder:** `{js['job_folder']}`"
                                 )
                             st.info("Use the History or Library tabs to inspect jobs and download ZIPs.")
