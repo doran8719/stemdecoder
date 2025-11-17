@@ -415,6 +415,7 @@ with tab_process:
                 "Processing log:",
                 value="\n".join(st.session_state["logs"]),
                 height=400,
+                key="processing-log",
             )
 
         # -------------------------
@@ -636,6 +637,7 @@ with tab_process:
                                 "Worker log:",
                                 value="\n".join(log_lines),
                                 height=300,
+                                key="worker-log",
                             )
 
                         with st.spinner("Processing on GPU worker..."):
@@ -665,7 +667,6 @@ with tab_process:
 
                             if status != "done":
                                 st.error("GPU job did not finish in time.")
-                                #return
 
                         # Fetch ZIP from worker
                         st.info("Fetching ZIP from GPU worker...")
@@ -717,5 +718,3 @@ with tab_process:
             update_log_box()
     else:
         st.info("Upload one or more WAV/MP3 files to begin.")
-
-
