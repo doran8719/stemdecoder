@@ -661,7 +661,7 @@ with tab_process:
                                 if status == "error":
                                     err_msg = status_json.get("error", "Unknown error")
                                     st.error(f"GPU job failed: {err_msg}")
-                                    return
+                                    st.stop()
 
                             if status != "done":
                                 st.error("GPU job did not finish in time.")
@@ -717,3 +717,5 @@ with tab_process:
             update_log_box()
     else:
         st.info("Upload one or more WAV/MP3 files to begin.")
+
+
