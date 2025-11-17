@@ -665,7 +665,7 @@ with tab_process:
 
                             if status != "done":
                                 st.error("GPU job did not finish in time.")
-                                return
+                                #return
 
                         # Fetch ZIP from worker
                         st.info("Fetching ZIP from GPU worker...")
