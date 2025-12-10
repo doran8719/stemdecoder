@@ -12,15 +12,30 @@ from starlette.background import BackgroundTask
 
 from processor import process_song
 
+
 # -----------------------------------------------------------------------------
-# Paths: all heavy data goes here (NOT under /workspace/beatdecoder)
+# Workspace selection: RunPod vs Local
 # -----------------------------------------------------------------------------
-WORKSPACE_ROOT = Path("/workspace")
+def get_workspace_root() -> Path:
+    """
+    On RunPod: use /workspace (writable pod volume).
+    On local dev: use ./workspace inside the project folder.
+    """
+    pod_path = Path("/workspace")
+    if pod_path.exists() and os.access(pod_path, os.W_OK):
+        # Running on RunPod or similar environment
+        return pod_path
+
+    # Fallback: local dev - use ./workspace next to this file
+    return Path(__file__).resolve().parent / "workspace"
+
+
+WORKSPACE_ROOT = get_workspace_root()
 JOBS_ROOT = WORKSPACE_ROOT / "jobs"
 UPLOADS_ROOT = WORKSPACE_ROOT / "uploads"
 TMP_ZIPS_ROOT = WORKSPACE_ROOT / "tmp_zips"
 
-for p in [JOBS_ROOT, UPLOADS_ROOT, TMP_ZIPS_ROOT]:
+for p in [WORKSPACE_ROOT, JOBS_ROOT, UPLOADS_ROOT, TMP_ZIPS_ROOT]:
     p.mkdir(parents=True, exist_ok=True)
 
 # -----------------------------------------------------------------------------
@@ -87,7 +102,6 @@ def cleanup_job(job_id: str, zip_path: Optional[Path] = None) -> None:
         if job_dir and job_dir.exists():
             shutil.rmtree(job_dir, ignore_errors=True)
     except Exception:
-        # Don't crash cleanup if deletion fails; just log to stdout.
         traceback.print_exc()
 
     try:
@@ -117,7 +131,7 @@ def run_job(
     stems_for_midi: List[str],
 ) -> None:
     """
-    Background worker that runs process_song on the GPU and updates job status.
+    Background worker that runs process_song and updates job status.
     """
     job = JOBS[job_id]
     job["status"] = "running"
@@ -125,7 +139,7 @@ def run_job(
 
     try:
         # process_song expects workspace_root similar to your Streamlit app.
-        # We pass /workspace to keep everything under /workspace/jobs.
+        # We pass WORKSPACE_ROOT, which is /workspace on RunPod and ./workspace locally.
         result = process_song(
             uploaded_path,
             WORKSPACE_ROOT,
@@ -167,25 +181,25 @@ async def start_job(
     stems_for_midi: str = Form("bass,other"),
 ) -> Dict[str, Any]:
     """
-    Start a new GPU job.
+    Start a new job.
 
     The Streamlit frontend sends:
       - file (wav/mp3)
       - model_name
-      - demucs_device ("cuda" for GPU)
+      - demucs_device ("cuda" for GPU; on local this will still say "cuda" but run on CPU)
       - run_serum_analysis ("true"/"false")
       - job_label
       - stems_for_midi (comma-separated)
     """
 
-    # unique ID: timestamp + random-ish
+    # unique ID: timestamp + microseconds
     job_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
 
     # parse booleans & lists
     run_serum = run_serum_analysis.lower() == "true"
     stems_list = [s.strip() for s in stems_for_midi.split(",") if s.strip()]
 
-    # store uploaded file under /workspace/uploads
+    # store uploaded file under WORKSPACE_ROOT/uploads
     UPLOADS_ROOT.mkdir(parents=True, exist_ok=True)
     safe_name = file.filename.replace(" ", "_") if file.filename else "uploaded_audio"
     upload_path = UPLOADS_ROOT / f"{job_id}_{safe_name}"
@@ -270,7 +284,7 @@ def job_zip(job_id: str = Query(..., description="ID returned from /start_job"))
     if not job_dir or not job_dir.exists():
         raise HTTPException(status_code=500, detail="Job output directory missing")
 
-    # create ZIP in /workspace/tmp_zips
+    # create ZIP in TMP_ZIPS_ROOT
     TMP_ZIPS_ROOT.mkdir(parents=True, exist_ok=True)
     zip_base = TMP_ZIPS_ROOT / f"{job_id}"
     # shutil.make_archive adds ".zip"
