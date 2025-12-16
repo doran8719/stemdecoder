@@ -2,6 +2,7 @@ import os
 import shutil
 import threading
 import traceback
+from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -54,6 +55,18 @@ JOBS: Dict[str, Dict[str, Any]] = {}
 
 app = FastAPI(title="BeatDecoder GPU Worker", version="1.0.0")
 
+ALLOWED_ORIGINS = [
+    "http://104.131.72.98/",
+    "https://beatdecoder.onrender.com",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # -----------------------------------------------------------------------------
 # Helpers
