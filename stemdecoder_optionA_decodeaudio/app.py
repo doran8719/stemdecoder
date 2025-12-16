@@ -986,7 +986,7 @@ upload = st.file_uploader(
 
 if upload is not None:
     st.caption("Ready to process with Demucs.")
-        if st.button("Start Processing", type="primary"):
+    if st.button("Start Processing", type="primary"):
         ts = time.strftime("%Y%m%d_%H%M%S")
         safe_name = Path(upload.name).stem.replace(" ", "_")
         job_dir = JOBS_DIR / f"{ts}_{safe_name}"
