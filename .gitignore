@@ -1,3 +1,17 @@
+app_old_backup.py
+.DS_Store
+__pycache__/
+venv/
+.env
+
+uploads/
+jobs/
+output/
+separated/
+bloom_dev_stems/
+midi_output/
+workspace/
+*.log
 venv/
 __pycache__/
 separated/
