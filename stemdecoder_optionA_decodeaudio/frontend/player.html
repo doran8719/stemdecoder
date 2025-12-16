@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="player.css"/>
+  </head>
+  <body>
+    <div class="sd-wrap">
+      <div class="sd-card">
+        <div class="sd-top">
+          <div class="sd-left">
+            <div class="sd-play" id="sdPlayBtn" title="Play/Pause (Space)">
+              <!-- play icon injected by JS -->
+            </div>
+
+            <div class="sd-meta">
+              <div class="sd-title" id="trackTitle">—</div>
+              <div class="sd-sub">
+                <span class="pill" id="pillBpm">BPM: —</span>
+                <span class="pill" id="pillKey">Key: —</span>
+                <span class="pill" id="durationText">Duration: —</span>
+                <span class="pill" id="selectionText">Selection: —</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="sd-actions">
+            <div class="dd" id="stemsDropdown">
+              <button class="sd-btn" id="downloadZipBtn" type="button">Download Stems ▾</button>
+              <div class="dd-panel" id="ddPanel" hidden>
+                <div class="dd-head">
+                  <div class="dd-title">Choose stems</div>
+                  <button class="dd-x" id="ddClose" type="button" aria-label="Close">✕</button>
+                </div>
+
+                <div class="dd-format">
+                  <span class="dd-label">Format</span>
+                  <label class="dd-radio"><input type="radio" name="fmt" value="wav" checked/> WAV</label>
+                  <label class="dd-radio"><input type="radio" name="fmt" value="mp3"/> MP3</label>
+                </div>
+
+                <div class="dd-list" id="ddList"></div>
+
+                <div class="dd-actions">
+                  <button class="sd-btn" id="ddSelectAll" type="button">Select All</button>
+                  <button class="sd-btn" id="ddClearAll" type="button">Clear</button>
+                  <button class="sd-btn primary" id="ddDownload" type="button">Download</button>
+                </div>
+              </div>
+            </div>
+
+            <button class="sd-btn" id="downloadMidiBtn" type="button">Download MIDI</button>
+
+            <div class="dd" id="exportDropdown">
+              <button class="sd-btn" id="actionExportSelection" type="button" disabled>Export Selection ▾</button>
+              <div class="dd-panel" id="expPanel" hidden>
+                <div class="dd-head">
+                  <div class="dd-title">Choose stems</div>
+                  <button class="dd-x" id="expClose" type="button" aria-label="Close">✕</button>
+                </div>
+
+                <div class="dd-format">
+                  <span class="dd-label">Format</span>
+                  <label class="dd-radio"><input type="radio" name="expfmt" value="wav" checked/> WAV</label>
+                  <label class="dd-radio"><input type="radio" name="expfmt" value="mp3"/> MP3</label>
+                </div>
+
+                <div class="dd-list" id="expList"></div>
+
+                <div class="dd-actions">
+                  <button class="sd-btn" id="expSelectAll" type="button">Select All</button>
+                  <button class="sd-btn" id="expClearAll" type="button">Clear</button>
+                  <button class="sd-btn primary" id="expExport" type="button">Export</button>
+                </div>
+              </div>
+            </div>
+
+            <button class="sd-btn" id="actionClearSelection" type="button" disabled>Clear</button>
+          </div>
+        </div>
+
+        <div class="sd-stems" id="stemsRoot"></div>
+
+        <div class="sd-footer">
+          <div>Tip: click to seek, drag to select • Space to play/pause</div>
+          <div id="brandRight">Decode Audio</div>
+        </div>
+      </div>
+    </div>
+
+    <script>window.__STEMDECODER_DATA__ = __DATA_JSON__;</script>
+    <script src="player.js"></script>
+  </body>
+</html>
