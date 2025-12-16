@@ -14,6 +14,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 import streamlit.components.v1 as components
+import os
+import traceback
+if "last_job" not in st.session_state:
+    st.session_state.last_job = None
 
 
 # =========================
@@ -982,7 +986,7 @@ upload = st.file_uploader(
 
 if upload is not None:
     st.caption("Ready to process with Demucs.")
-    if st.button("Start Processing", type="primary"):
+        if st.button("Start Processing", type="primary"):
         ts = time.strftime("%Y%m%d_%H%M%S")
         safe_name = Path(upload.name).stem.replace(" ", "_")
         job_dir = JOBS_DIR / f"{ts}_{safe_name}"
@@ -1011,8 +1015,11 @@ if upload is not None:
             st.success("Done! Loading…")
             st.query_params["job"] = job_dir.name
             st.rerun()
-        except Exception as e:
-            st.error(f"Processing failed: {e}")
+
+        except Exception:
+            st.error("❌ Processing failed on the server. Full error:")
+            st.code(traceback.format_exc())
+            st.stop()
 
 # remove div wrapper and separator
 
