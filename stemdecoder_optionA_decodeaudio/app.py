@@ -929,17 +929,34 @@ def _run_demucs_to_job(input_path: Path, job_dir: Path) -> None:
     stems_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = ["python", "-u", "-m", "demucs", "-o", str(stems_dir), str(input_path)]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+    p = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
+    )
+
+    # NEW: capture output so we can show the real error if Demucs fails
+    out_lines: list[str] = []
 
     prog = st.progress(0)
-    prog_text = st.markdown('<div class="decode-progress-text">Decoding… 0%</div>', unsafe_allow_html=True)
+    prog_text = st.markdown(
+        '<div class="decode-progress-text">Decoding… 0%</div>',
+        unsafe_allow_html=True,
+    )
     last_pct = -1
 
     if p.stdout:
         for line in p.stdout:
+            out_lines.append(line.rstrip("\n"))
+
             m = re.search(r"(\d{1,3})%\|", line)
             if not m:
                 m = re.search(r"^\s*(\d{1,3})%\s*", line)
+
             if m:
                 pct = max(0, min(100, int(m.group(1))))
                 if pct != last_pct:
@@ -958,7 +975,8 @@ def _run_demucs_to_job(input_path: Path, job_dir: Path) -> None:
         pass
 
     if rc != 0:
-        raise RuntimeError(f"Demucs exited with code {rc}")
+        tail = "\n".join(out_lines[-200:]) if out_lines else "[no demucs output captured]"
+        raise RuntimeError(f"Demucs exited with code {rc}\n\n--- Demucs output (last 200 lines) ---\n{tail}")
 
     produced = list(stems_dir.rglob("*.wav"))
     if not produced:
