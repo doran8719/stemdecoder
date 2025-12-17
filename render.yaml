@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: stemdecoder
+    env: docker
+    plan: starter
+    autoDeploy: true
+
