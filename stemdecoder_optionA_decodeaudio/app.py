@@ -1002,7 +1002,10 @@ if upload is not None:
 
         try:
             _run_demucs_to_job(in_path, job_dir)
-
+		st.write("DEBUG job_dir:", str(job_dir))
+		st.write("DEBUG job_dir exists:", job_dir.exists())
+		st.write("DEBUG files:", [p.name for p in job_dir.rglob("*")][:200])
+		
             # Analyze BPM/Key after stems complete (best effort)
             bpm, key = _estimate_bpm_and_key(in_path)
             meta2 = _read_meta(job_dir)
