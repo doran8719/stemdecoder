@@ -928,7 +928,7 @@ def _run_demucs_to_job(input_path: Path, job_dir: Path) -> None:
     stems_dir = job_dir / "stems"
     stems_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = ["python", "-u", "-m", "demucs", "-o", str(stems_dir), str(input_path)]
+    cmd = ["python", "-u", "-m", "demucs.separate", "-o", str(stems_dir), str(input_path)]
 
     p = subprocess.Popen(
         cmd,
